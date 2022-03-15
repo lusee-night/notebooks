@@ -15,7 +15,7 @@ Please keep notebooks logically organized and add nbviewer links here.
  * [First attempt at shadow calculation](https://nbviewer.org/github/lusee-night/notebooks/blob/main/solar_power/shadows.ipynb)
 
 ## Transfer Rates
- * [First attempt at calculating the transfer rates](https://nbviewer.org/github/lusee-night/notebooks/blob/main/transfer_rates/transfer_rates.ipynb)
+ * [Transfer rates calculator](https://nbviewer.org/github/lusee-night/notebooks/blob/main/transfer_rates/transfer_rates.ipynb)
 
 
 
