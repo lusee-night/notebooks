@@ -17,5 +17,7 @@ Please keep notebooks logically organized and add nbviewer links here.
 ## Transfer Rates
  * [Transfer rates calculator](https://nbviewer.org/github/lusee-night/notebooks/blob/main/transfer_rates/transfer_rates.ipynb)
 
+## Spectrometer
+ * [Spectrometer bin responses](https://nbviewer.org/github/lusee-night/notebooks/blob/main/spectrometer/spectrometer_responses.ipynb)
 
 
