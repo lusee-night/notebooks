@@ -1,6 +1,5 @@
 import numpy as np
 
-
 class Comb:
 
     def __init__ (self,Nstart=181, Nend = 983, response = lambda x:1, noise = lambda x:1):
@@ -10,12 +9,22 @@ class Comb:
         delta_freq = 100e3
         base_freq = 50e3
 
-        self.kcomb = np.arange(Nstart,Nend,2)
+        self.kcomb = np.arange(Nstart,Nend,2,dtype=np.float64)
         self.fcomb = self.kcomb*base_freq # in Hz
         self.Nb = (Nend-Nstart)//2
-        
+ 
         self.true_resp = response(self.fcomb)
         self.noise_level = noise(self.fcomb)
+
+        self.pilot_idx = [130,267,350]
+        for i in range(len(self.true_resp)): 
+            if i not in self.pilot_idx:
+                self.true_resp[i] *= np.sqrt((6*6*3)/398)
+                self.noise_level[i] *= np.sqrt((6*6*3)/398)
+            else:
+                self.true_resp[i] *= 6
+                self.noise_level[i] *= 6
+
         # our transmission code
         self.code = np.exp(2*np.pi*1j*np.random.uniform(0,2*np.pi,self.Nb))
         self.code_resp = self.code * self.true_resp
@@ -110,6 +119,9 @@ class Calibrator:
         SNRdBdet_ret = []
         detect_ret = []
         data_ret = []
+        FD_check = [] #db
+        SD_check = [] #db
+        i = 1 #db
         while True:
             data = self.produce_data_block()
             # Average over Nnotch
@@ -135,21 +147,26 @@ class Calibrator:
             sum0null = (data*nullw[:,None]).sum(axis=0)
             sum1 = (1j*kar*data).sum(axis=0)
             sum2 = (-kar**2*data).sum(axis=0)
-            FD = np.real(sum1*np.conj(sum0))
-            SD = np.real(sum2*np.conj(sum0)+sum1*np.conj(sum1))
+
+            # it begins
+            FD = np.real(sum1*np.conj(sum0)) #problematic
+            SD = np.real(sum2*np.conj(sum0)+sum1*np.conj(sum1)) #less problematic
             sig2 = np.abs(sum0**2)
             noise2 = np.abs(sum0null**2)
-            SNR = sig2.sum()/noise2.sum()
+            SNR = sig2.sum()/noise2.sum() #you're doing great
             SNRdB = np.log10(SNR)*10
-            FD = FD[self.ndx_start:self.ndx_end].sum()
-            SD = SD[self.ndx_start:self.ndx_end].sum()
-            delta_drift = (FD/SD)
+            FD_sum = sum(FD[i] for i in self.comb.pilot_idx)
+            SD_sum = sum(SD[i] for i in self.comb.pilot_idx)
+            FD_check.append(FD_sum) #db
+            SD_check.append(SD_sum) #db
+            delta_drift = (FD_sum / SD_sum)
             if force_detect:
-                pdrift += delta_drift    
-                #print ('new pdrift = ', pdrift/alpha_to_pdrift)
+                pdrift += delta_drift
+                # print('new pdrift = ', pdrift / alpha_to_pdrift)
             else:
-                if (np.abs(delta_drift)<self.max_shift*alpha_to_pdrift) and (SD<0):
-                    #sticky detect, need SNR first time, then ok
+                # Ensure SD_sum is scalar for logical comparison
+                if (np.abs(delta_drift) < self.max_shift * alpha_to_pdrift) and (SD_sum < 0):
+                    # sticky detect, need SNR first time, then ok
                     if not detect:
                         if SNR>1.5:
                             detect=True
@@ -159,6 +176,8 @@ class Calibrator:
                 pdrift = pdrift+delta_drift
                 if np.abs(pdrift)>self.max_alpha*alpha_to_pdrift:
                     pdrift = np.sign(pdrift)*self.max_alpha*alpha_to_pdrift*(-1)
+            print(FD_sum, SD_sum, detect) #db
+            i += 1 #db
             t_ret.append(t)
             alpha_ret.append(alpha)
             alphadet_ret.append(pdrift/alpha_to_pdrift)
@@ -167,15 +186,18 @@ class Calibrator:
             detect_ret.append(detect)
             data_ret.append(sum0)
     
+        print("FD mean:",np.mean(FD_check), "SD mean:", np.mean(SD_check)) #db
+        print(self.max_shift * alpha_to_pdrift) #db
         return {'t':np.array(t_ret), 
                 'alpha':np.array(alpha_ret), 
                 'alphadet':np.array(alphadet_ret), 
                 'SNRdB':np.array(SNRdB_ret), 
                 'SNRdBdet':np.array(SNRdBdet_ret), 
                 'detect':np.array(detect_ret), 
-                'data':np.array(data_ret)}
+                'data':np.array(data_ret),
+                'FD':np.array(FD_check),
+                'SD':np.array(SD_check)}
     
-                
                 
 
 
