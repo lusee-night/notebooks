@@ -2,7 +2,7 @@ import numpy as np
 
 class Comb:
 
-    def __init__ (self,Nstart=181, Nend = 983, response = lambda x:1, noise = lambda x:1):
+    def __init__ (self,Nstart=181, Nend = 983, response = lambda x:1, noise = lambda x:1, pilot_idx=None, pilot_boost=3):
         # Above is 401 combs starting at 9.05
         # response and noise are functions of frequency in Hz
 
@@ -16,14 +16,21 @@ class Comb:
         self.true_resp = response(self.fcomb)
         self.noise_level = noise(self.fcomb)
 
-        self.pilot_idx = [130,267,350]
-        for i in range(len(self.true_resp)): 
-            if i not in self.pilot_idx:
-                self.true_resp[i] *= np.sqrt((6*6*3)/398)
-                self.noise_level[i] *= np.sqrt((6*6*3)/398)
-            else:
-                self.true_resp[i] *= 6
-                self.noise_level[i] *= 6
+        if pilot_idx is not None:
+            Npilots = len(pilot_idx)
+            Nothers = self.Nb-Npilots
+            non_pilot_boost = np.sqrt((self.Nb-pilot_boost**2*Npilots)/Nothers)
+            if np.isnan(non_pilot_boost):
+                print ("pilot_boost too gigantic")
+                assert(False)       
+            print ('pilot_boost', pilot_boost)
+            print ('non_pilot_boost', non_pilot_boost)
+            for i in range(len(self.true_resp)): 
+                if i in pilot_idx:
+                    self.true_resp[i] *= pilot_boost
+                else:
+                    self.true_resp[i] *= non_pilot_boost
+        self.pilot_idx = pilot_idx
 
         # our transmission code
         self.code = np.exp(2*np.pi*1j*np.random.uniform(0,2*np.pi,self.Nb))
@@ -155,20 +162,25 @@ class Calibrator:
             noise2 = np.abs(sum0null**2)
             SNR = sig2.sum()/noise2.sum() #you're doing great
             SNRdB = np.log10(SNR)*10
-            FD_sum = sum(FD[i] for i in self.comb.pilot_idx)
-            SD_sum = sum(SD[i] for i in self.comb.pilot_idx)
+            if self.comb.pilot_idx is None:
+                FD_sum = sum(FD)
+                SD_sum = sum(SD)
+            else:
+                FD_sum = sum(FD[i] for i in self.comb.pilot_idx)
+                SD_sum = sum(SD[i] for i in self.comb.pilot_idx)
             FD_check.append(FD_sum) #db
             SD_check.append(SD_sum) #db
             delta_drift = (FD_sum / SD_sum)
             if force_detect:
                 pdrift += delta_drift
+                detect = True
                 # print('new pdrift = ', pdrift / alpha_to_pdrift)
             else:
                 # Ensure SD_sum is scalar for logical comparison
                 if (np.abs(delta_drift) < self.max_shift * alpha_to_pdrift) and (SD_sum < 0):
                     # sticky detect, need SNR first time, then ok
                     if not detect:
-                        if SNR>1.5:
+                        if SNR>1.0:
                             detect=True
                 else:
                     detect=False
