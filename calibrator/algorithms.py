@@ -32,7 +32,7 @@ class Comb:
                     self.true_resp[i] *= non_pilot_boost
         self.pilot_idx = pilot_idx
 
-        self.true_resp*=precompensation[Nstart//2:Nend//2]*antenna[Nstart//2:Nend//2]
+        self.true_resp*=np.sqrt(precompensation[Nstart//2:Nend//2]*antenna[Nstart//2:Nend//2])
 
         # our transmission code
         self.code = np.exp(2*np.pi*1j*np.random.uniform(0,2*np.pi,self.Nb))
