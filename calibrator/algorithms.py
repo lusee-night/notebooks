@@ -2,37 +2,19 @@ import numpy as np
 
 class Comb:
 
-    def __init__ (self,Nstart=181, Nend = 983, response = lambda x:1, noise = lambda x:1, pilot_idx=None, pilot_boost=3, precompensation=None, antenna=None):
+    def __init__ (self,kar, response, noise):
         # Above is 401 combs starting at 9.05
         # response and noise are functions of frequency in Hz
 
         delta_freq = 100e3
         base_freq = 50e3
 
-        self.kcomb = np.arange(Nstart,Nend,2,dtype=np.float64)
+        self.kcomb = kar
         self.fcomb = self.kcomb*base_freq # in Hz
-        self.Nb = (Nend-Nstart)//2
+        self.Nb = len(self.fcomb)
  
-        self.true_resp = response(self.fcomb)
-        self.noise_level = noise(self.fcomb)
-
-        if pilot_idx is not None:
-            Npilots = len(pilot_idx)
-            Nothers = self.Nb-Npilots
-            non_pilot_boost = np.sqrt((self.Nb-pilot_boost**2*Npilots)/Nothers)
-            if np.isnan(non_pilot_boost):
-                print ("pilot_boost too gigantic")
-                assert(False)       
-            print ('pilot_boost', pilot_boost)
-            print ('non_pilot_boost', non_pilot_boost)
-            for i in range(len(self.true_resp)): 
-                if i in pilot_idx:
-                    self.true_resp[i] *= pilot_boost
-                else:
-                    self.true_resp[i] *= non_pilot_boost
-        self.pilot_idx = pilot_idx
-
-        self.true_resp*=np.sqrt(precompensation[Nstart//2:Nend//2]*antenna[Nstart//2:Nend//2])
+        self.true_resp = response
+        self.noise_level = noise
 
         # our transmission code
         self.code = np.exp(2*np.pi*1j*np.random.uniform(0,2*np.pi,self.Nb))
@@ -40,17 +22,12 @@ class Comb:
         self.dt = 4096/102.4e6  # time between frames in s
         self.phase_drift_per_ppm = self.fcomb*self.dt*(1/1e6)*2*np.pi
         self.alpha_to_pdrift0 = (base_freq*self.dt*(1/1e6)*2*np.pi)
-        
-
-
-        #self.Nnotch = 16
-        #alpha_to_pdrift = (self.Nnotch*phase_drift_per_ppm/kcomb)[0]
+        self.weights = response**2/noise**4
 
 
 class Calibrator:
 
-    def __init__ (self, comb, alpha = 0.0, dalpha_dt=0.0, Nnotch = 16, Nintg = 64, add_noise = False, 
-                  ndx_start = 0, ndx_end = 512,
+    def __init__ (self, comb, alpha = 0.0, dalpha_dt=0.0, Nnotch = 16, Nintg = 128, add_noise = False, 
                   sc=None, ssig=None, max_shift = 0.05, max_alpha = 1.2):
         # Nnotch is the primary blind integration
         # Nintg is what is Navg2 in firmware
@@ -62,15 +39,14 @@ class Calibrator:
         self.Nnotch = Nnotch
         self.Nintg = Nintg
         self.add_noise = add_noise
-        self.istart = 0
         self.last_phase = np.zeros(self.comb.Nb)
         self.Nblock = Nnotch*Nintg
         self.sc = sc
         self.ssig = ssig
         self.max_shift = max_shift
         self.max_alpha = max_alpha
-        self.ndx_start = ndx_start
-        self.ndx_end = ndx_end
+        self.kar = np.outer(np.arange(self.Nintg+1),self.comb.kcomb)
+        self.istart = 0
 
     def produce_data_block(self):
         iend = self.istart+self.Nblock
@@ -126,6 +102,7 @@ class Calibrator:
         alphadet_ret = []
         SNRdB_ret = []
         SNRdBdet_ret = []
+        SNR2_ret = []
         detect_ret = []
         data_ret = []
         FD_check = [] #db
@@ -146,57 +123,69 @@ class Calibrator:
                 if count>countmax:
                     break
             assert(data.shape[0]==self.Nintg)
-            kar = np.outer(np.arange(self.Nintg+1),self.comb.kcomb)
-            phase_cor = np.exp(-1j*pdrift*kar)
+            
+            phase_cor = np.exp(-1j*pdrift*self.kar)
             phase1 = init_phase*phase_cor
             init_phase = phase1[-1,:]
             data *= phase1[:-1,:]
-            kar = kar[:-1,:]            
+            kar = self.kar[:-1,:]            
             sum0 = data.sum(axis=0)
-            sum0null = (data*nullw[:,None]).sum(axis=0)
+            sum0null = (np.abs((data[::2]-data[1::2])**2)).sum(axis=0)
+
             sum1 = (1j*kar*data).sum(axis=0)
             sum2 = (-kar**2*data).sum(axis=0)
 
             # it begins
             FD = np.real(sum1*np.conj(sum0)) #problematic
             SD = np.real(sum2*np.conj(sum0)+sum1*np.conj(sum1)) #less problematic
-            sig2 = np.abs(sum0**2)
-            noise2 = np.abs(sum0null**2)
-            SNR = sig2.sum()/noise2.sum() #you're doing great
-            SNRdB = np.log10(SNR)*10
-            if self.comb.pilot_idx is None:
-                FD_sum = sum(FD)
-                SD_sum = sum(SD)
-            else:
-                FD_sum = sum(FD[i] for i in self.comb.pilot_idx)
-                SD_sum = sum(SD[i] for i in self.comb.pilot_idx)
+
+
+
+            SNR2  = np.sum(np.abs(sum0**2)/sum0null)
+            SNRdB = np.log10(SNR2-420)*10
+            
+            FD_sum = np.sum(FD*self.comb.weights)
+            SD_sum = np.sum(SD*self.comb.weights)
+
             FD_check.append(FD_sum) #db
             SD_check.append(SD_sum) #db
             delta_drift = (FD_sum / SD_sum)
             if force_detect:
-                pdrift += delta_drift
                 detect = True
-                # print('new pdrift = ', pdrift / alpha_to_pdrift)
             else:
-                # Ensure SD_sum is scalar for logical comparison
-                if (np.abs(delta_drift) < self.max_shift * alpha_to_pdrift) and (SD_sum < 0):
-                    # sticky detect, need SNR first time, then ok
-                    if not detect:
-                        if SNR>1.0:
-                            detect=True
+                if detect:
+                    if SNR2<425:
+                        detect = False
                 else:
-                    detect=False
+                    if (SNR2>500) and (SD_sum<0):
+                        detect = True
+            if detect:
+                if SNR2<800:
+                    delta_drift /= 2
+                elif SNR2<600:
+                    delta_drift /= 2**3
+                elif SNR2<500:
+                    delta_drift /= 2**5
+                elif SNR2<470:                        
+                    delta_drift = 0
+                if delta_drift>self.max_shift*alpha_to_pdrift:
                     delta_drift = self.max_shift*alpha_to_pdrift
-                pdrift = pdrift+delta_drift
-                if np.abs(pdrift)>self.max_alpha*alpha_to_pdrift:
-                    pdrift = np.sign(pdrift)*self.max_alpha*alpha_to_pdrift*(-1)
-            print(FD_sum, SD_sum, detect) #db
+                if delta_drift<-self.max_shift*alpha_to_pdrift:
+                    delta_drift = -self.max_shift*alpha_to_pdrift
+            else:
+                    
+                delta_drift = self.max_shift*alpha_to_pdrift
+
+            pdrift = pdrift+delta_drift
+            if np.abs(pdrift)>self.max_alpha*alpha_to_pdrift:
+                pdrift = np.sign(pdrift)*self.max_alpha*alpha_to_pdrift*(-1)
             i += 1 #db
             t_ret.append(t)
             alpha_ret.append(alpha)
             alphadet_ret.append(pdrift/alpha_to_pdrift)
             SNRdB_ret.append(dB)
             SNRdBdet_ret.append(SNRdB)
+            SNR2_ret.append(SNR2)
             detect_ret.append(detect)
             data_ret.append(sum0)
     
@@ -207,6 +196,7 @@ class Calibrator:
                 'alphadet':np.array(alphadet_ret), 
                 'SNRdB':np.array(SNRdB_ret), 
                 'SNRdBdet':np.array(SNRdBdet_ret), 
+                'SNR2':np.array(SNR2_ret),
                 'detect':np.array(detect_ret), 
                 'data':np.array(data_ret),
                 'FD':np.array(FD_check),
