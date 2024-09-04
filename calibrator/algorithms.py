@@ -199,12 +199,12 @@ class Calibrator:
                     detect = 0
             else:
                 if detect>0:
-                    if SNR2<self.SNRon:
+                    if SNR2<self.SNRoff:
                         detect = 0
                     else:
                         detect = detect+1
                 else:
-                    if (SNR2>self.SNRoff) and (SD_sum<0):
+                    if (SNR2>self.SNRon) and (SD_sum<0):
                         detect = 1
             if detect:
                 if self.delta_drift_cor_A is not None:
