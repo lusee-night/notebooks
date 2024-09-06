@@ -131,6 +131,7 @@ class Calibrator:
         SNRdB_ret = []
         SNRdBdet_ret = []
         SNR2_ret = []
+        SNR2alt_ret = []
         detect_ret = []
         detect3_ret = []
         ofs3_ret = []
@@ -186,6 +187,8 @@ class Calibrator:
             SNR2  = np.sum(np.abs(sum0**2)/sum0null*(self.comb.weights>0))
             SNRdB = np.log10(SNR2-SNRbase)*10
             
+            SNR2alt = np.sum(np.abs(sum0**2)*self.comb.weights)/np.sum(sum0null*self.comb.weights)
+
             FD_sum = np.sum(FD*self.comb.weights)
             SD_sum = np.sum(SD*self.comb.weights)
 
@@ -241,6 +244,7 @@ class Calibrator:
             SNRdB_ret.append(dB)
             SNRdBdet_ret.append(SNRdB)
             SNR2_ret.append(SNR2)
+            SNR2alt_ret.append(SNR2alt)
             detect_ret.append(detect)
             data_ret.append(sum0)
     
@@ -252,6 +256,7 @@ class Calibrator:
                 'SNRdB':np.array(SNRdB_ret), 
                 'SNRdBdet':np.array(SNRdBdet_ret), 
                 'SNR2':np.array(SNR2_ret),
+                'SNR2alt':np.array(SNR2alt_ret),
                 'detect':np.array(detect_ret), 
                 'detect3':np.array(detect3_ret),
                 'ofs3':np.array(ofs3_ret),
