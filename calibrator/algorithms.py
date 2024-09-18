@@ -25,14 +25,14 @@ class Comb:
         self.weights = response**2/noise**4
         self.weights /= self.weights.max()
         if weight_bits is not None:
-            self.weights = np.round(self.weights*2**weight_bits)/2**weight_bits
+            self.weights = np.round(self.weights*2**weight_bits)#/2**weight_bits
         print ('Non zero weights', np.sum(self.weights>0))   
 
 
 class Calibrator:
 
-    def __init__ (self, comb, alpha = 0.0, dalpha_dt=0.0, Nnotch = 16, Nintg = 256, Nstage3=128, add_noise = False, 
-                  sc=None, ssig=None, sA=1.0, max_shift = 0.05, max_alpha = 1.2, Nsettle=20, SNRon = 350, SNRoff=300, delta_drift_cor_A = 250, delta_drift_cor_B = 5000):
+    def __init__ (self, comb, alpha = 0.0, dalpha_dt=0.0, Nnotch = 16, Nintg = 256, Nstage3=8, add_noise = False, 
+                  sc=None, ssig=None, sA=1.0, max_shift = 0.05, max_alpha = 1.2, Nsettle=3, SNRon = 3, SNRoff=2, delta_drift_cor_A = 2, delta_drift_cor_B = 20, export=None):
         # Nnotch is the primary blind integration
         # Nintg is what is Navg2 in firmware
         # sc and ssig are the center and width of the gaussian amplitude modulation (if not None) in units of secods
@@ -58,6 +58,35 @@ class Calibrator:
         self.SNRon = SNRon
         self.SNRoff = SNRoff
         self.Nsettle = Nsettle
+        self.export = (export is not None)
+        if self.export:
+            self.export = True
+            self.export_input = open(export+".input",'wb')
+            self.export_noise = open(export+".noise",'wb')
+            self.export_output = open(export+".output",'w')
+            weights = np.zeros(512)
+            Nw = len(self.comb.weights)
+            weights[90:90+Nw] = self.comb.weights
+            fw = open(export+'.weights','w')
+            for i,w in enumerate(weights):
+                fw.write (f"{i} {0.050+i*0.100:5.4f} {int(w)}\n")
+            fw.close()
+
+        
+    def write_input(self, data):
+        
+        Nd = data.shape[1]
+        for line in data:
+            noise_real = np.random.normal(0,1.0/np.sqrt(2*self.Nnotch), 2048)
+            noise_imag = np.random.normal(0,1.0/np.sqrt(2*self.Nnotch), 2048)
+            noise = noise_real+1j*noise_imag
+            self.export_noise.write(noise.astype(np.complex64).tobytes())
+
+            dataf = np.zeros(2048, complex)  ## in principle, this could be noise
+            dataf[361:361+4*Nd:4] = line
+            self.export_input.write(dataf.astype(np.complex64).tobytes()) # this already contains the noise
+
+        
 
     def produce_data_block(self):
         iend = self.istart+self.Nblock
@@ -98,22 +127,31 @@ class Calibrator:
             
         
     def stage3_add (self, sum0, detect):
-        prod = self.sum3*np.conj(sum0)
-        sum1 = (1j*self.comb.kcomb*prod).sum()
-        sum2 = (-self.comb.kcomb**2*prod).sum()
-        FD = np.real(sum1) #problematic
-        SD = np.real(sum2)
-        ofs = FD/SD
-        if (detect) and (self.count3<self.Nstage3):
-            phase = self.comb.kcomb*ofs
-            self.sum3 = self.sum3*np.exp(-1j*phase)+sum0
-            self.debug.append((self.sum3,sum0))
-            self.count3 += 1
-            detect=True
+        if detect:
+            prod = self.sum3*np.conj(sum0)
+            print ("PROD",self.sum3[0], np.conj(sum0)[0])
+            if np.any(np.isnan(prod)):
+                print ("WTF")
+                print (self.sum3)
+                print (sum0)
+                stop()
+            sum1 = (1j*self.comb.kcomb*prod).sum()
+            sum2 = (-self.comb.kcomb**2*prod).sum()
+            FD = np.real(sum1) #problematic
+            SD = np.real(sum2)
+            ofs = FD/SD if (SD!=0) else 0
+            print ("FDSD",FD,SD)
+            if (self.count3<self.Nstage3):
+                phase = self.comb.kcomb*ofs
+                self.sum3 = self.sum3*np.exp(-1j*phase)+sum0
+                print ("And now:", self.sum3[0], np.exp(-1j*phase)[0], sum0[0])
+                self.debug.append((self.sum3,sum0))
+                self.count3 += 1
         else:
-            self.sum3 = sum0
-            self.count3 = 0
-            detect = False
+            # we do this elsewhere now
+            #    self.sum3 = np.zeros(self.comb.Nb, complex)
+            #    self.count3 = 0
+            ofs = 0
         return detect, ofs
 
 
@@ -136,6 +174,7 @@ class Calibrator:
         detect3_ret = []
         ofs3_ret = []
         stage3_ret = []
+        stage3_Nacc = []
         stage3_time = []
         data_ret = []
         FD_check = [] #db
@@ -145,13 +184,15 @@ class Calibrator:
         self.sum3 = np.zeros(self.comb.Nb, complex)
         self.debug = []
         self.count3 = 0
-        SNRbase = np.sum(self.comb.weights>0)
+        SNRbase = 1 #np.sum(self.comb.weights>0)
         i = 1 #db
         while True:
             data,phase_in = self.produce_data_block()
             # Average over Nnotch
             data= data.reshape(self.Nintg,self.Nnotch,data.shape[1]).mean(axis=1)
-
+            # we output Nnotch output
+            if self.export:
+                self.write_input(data)
             alpha = self.current_alpha
             dB = self.current_dB
             t = self.current_t        
@@ -163,9 +204,10 @@ class Calibrator:
                     break
             assert(data.shape[0]==self.Nintg)
             phase_cor = np.exp(-1j*pdrift*self.kar)
-            if not detect:
-                init_phase = np.ones(self.comb.Nb, complex)
+            #if not detect:
+            #    init_phase = np.ones(self.comb.Nb, complex)
             phase1 = init_phase*phase_cor
+
             init_phase = phase1[-1,:]
             data *= phase1[:-1,:]
             #phase_in_ret.append (phase_in[:,0])
@@ -173,6 +215,7 @@ class Calibrator:
 
             kar = self.kar[:-1,:]            
             sum0 = data.sum(axis=0)
+    
             sum0null = (np.abs((data[::2]-data[1::2])**2)).sum(axis=0)
 
             sum1 = (1j*kar*data).sum(axis=0)
@@ -184,10 +227,10 @@ class Calibrator:
 
 
 
-            SNR2  = np.sum(np.abs(sum0**2)/sum0null*(self.comb.weights>0))
-            SNRdB = np.log10(SNR2-SNRbase)*10
+            SNR2alt  = np.sum(np.abs(sum0**2)/sum0null*(self.comb.weights>0))
+            SNRdB = np.log10(SNR2alt-SNRbase)*10
             
-            SNR2alt = np.sum(np.abs(sum0**2)*self.comb.weights)/np.sum(sum0null*self.comb.weights)
+            SNR2 = np.sum(np.abs(sum0**2)*self.comb.weights)/np.sum(sum0null*self.comb.weights)
 
             FD_sum = np.sum(FD*self.comb.weights)
             SD_sum = np.sum(SD*self.comb.weights)
@@ -222,15 +265,25 @@ class Calibrator:
                 
                 #delta_drift = (-0.3*alpha_to_pdrift-pdrift)
             else:
-                    
+                aha = 0   
+                cor = 0 
                 delta_drift = self.max_shift*alpha_to_pdrift
 
-            if (self.count3==self.Nstage3) or (self.count3>0 and detect==0):
-                stage3_ret.append(self.sum3)
-                self.sum3 = np.zeros(self.comb.Nb, complex)
-                stage3_time.append(t)
-
+            
+            print ("ADA:", sum0[0]*1e6)
             detect3, ofs3 = self.stage3_add(sum0,detect>self.Nsettle)
+            if (self.count3==self.Nstage3) or (self.count3>0 and not detect):
+                stage3_ret.append(self.sum3)
+                stage3_Nacc.append(self.count3)
+                stage3_time.append(t)
+                self.sum3 = np.zeros(self.comb.Nb, complex)
+                self.count3 = 0
+                ofs = 0
+
+
+            if self.export:
+                self.export_output.write(f"{t:6.2} {alpha:5.2} {pdrift/alpha_to_pdrift:5.4} {SNR2:5.4}  {detect} {detect3} {ofs3} {delta_drift} {aha} {cor}\n")
+
             detect3_ret.append(detect3)
             ofs3_ret.append(ofs3)
 
@@ -250,6 +303,11 @@ class Calibrator:
     
         
         print(self.max_shift * alpha_to_pdrift) #db
+        if self.export:
+            self.export_input.close()
+            self.export_noise.close()
+            self.export_output.close()
+
         self.results =  {'t':np.array(t_ret), 
                 'alpha':np.array(alpha_ret), 
                 'alphadet':np.array(alphadet_ret), 
@@ -262,6 +320,7 @@ class Calibrator:
                 'ofs3':np.array(ofs3_ret),
                 'stage3':np.array(stage3_ret),
                 'stage3_time':np.array(stage3_time),
+                'stage3_Nacc':np.array(stage3_Nacc),
                 'data':np.array(data_ret),
                 'FD':np.array(FD_check),
                 'SD':np.array(SD_check)}
