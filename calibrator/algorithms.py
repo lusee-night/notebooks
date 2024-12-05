@@ -2,7 +2,7 @@ import numpy as np
 
 class Comb:
 
-    def __init__ (self,kar, response, noise, weight_bits = 8):
+    def __init__ (self,kar, response, noise, noise_full, weight_bits = 8):
         # Above is 401 combs starting at 9.05
         # response and noise are functions of frequency in Hz
 
@@ -15,6 +15,7 @@ class Comb:
  
         self.true_resp = response
         self.noise_level = noise
+        self.noise_full = noise_full
 
         # our transmission code
         self.code = np.exp(2*np.pi*1j*np.random.uniform(0,2*np.pi,self.Nb))
@@ -62,7 +63,7 @@ class Calibrator:
         if self.export:
             self.export = True
             self.export_input = open(export+".input",'wb')
-            self.export_noise = open(export+".noise",'wb')
+            self.export_noise = [open(export+".noise2",'wb'),open(export+".noise3",'wb'),open(export+".noise4",'wb')]
             self.export_output = open(export+".output",'w')
             weights = np.zeros(512)
             Nw = len(self.comb.weights)
@@ -77,14 +78,17 @@ class Calibrator:
         
         Nd = data.shape[1]
         for line in data:
-            noise_real = np.random.normal(0,1.0/np.sqrt(2*self.Nnotch), 2048)
-            noise_imag = np.random.normal(0,1.0/np.sqrt(2*self.Nnotch), 2048)
-            noise = noise_real+1j*noise_imag
-            self.export_noise.write(noise.astype(np.complex64).tobytes())
-
+            for i in range(3):            
+                noise_real = np.random.normal(0,1.0/np.sqrt(2*self.Nnotch), 2048)
+                noise_imag = np.random.normal(0,1.0/np.sqrt(2*self.Nnotch), 2048)
+                noise = noise_real+1j*noise_imag
+                noise *= self.comb.noise_full                                
+                self.export_noise[i].write(noise.astype(np.complex64).tobytes())
+                
             dataf = np.zeros(2048, complex)  ## in principle, this could be noise
-            dataf[361:361+4*Nd:4] = line
+            dataf[361:361+4*Nd:4] = line 
             self.export_input.write(dataf.astype(np.complex64).tobytes()) # this already contains the noise
+            
 
         
 
@@ -305,7 +309,8 @@ class Calibrator:
         print(self.max_shift * alpha_to_pdrift) #db
         if self.export:
             self.export_input.close()
-            self.export_noise.close()
+            for f in self.export_noise:
+                f.close()
             self.export_output.close()
 
         self.results =  {'t':np.array(t_ret), 
